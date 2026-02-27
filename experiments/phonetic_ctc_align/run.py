@@ -36,9 +36,12 @@ _RETRIEVER = None
 
 
 def _get_device() -> torch.device:
-    # Prefer CUDA if available for training/bench, otherwise CPU.
+    # Prefer CUDA, then Apple Silicon MPS, then CPU.
     if torch.cuda.is_available():
         return torch.device("cuda")
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return torch.device("mps")
     return torch.device("cpu")
 
 

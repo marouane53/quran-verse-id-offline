@@ -19,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from datasets import load_dataset
+from datasets import Audio, load_dataset
 from tqdm import tqdm
 
 from quran_verse_id.normalizer import normalize_phonetic
@@ -43,6 +43,10 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     ds = load_dataset(args.dataset, split=args.split)
+    # Avoid decoding audio features; this script only needs text/ids.
+    for col_name, feature in ds.features.items():
+        if isinstance(feature, Audio):
+            ds = ds.cast_column(col_name, Audio(decode=False))
 
     # Collect word_tr by verse
     words_by_verse: Dict[Tuple[int, int], List[Tuple[int, str]]] = defaultdict(list)

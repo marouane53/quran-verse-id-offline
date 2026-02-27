@@ -2,6 +2,7 @@ torch>=2.2
 torchaudio>=2.2
 transformers>=4.43
 datasets>=2.20
+torchcodec
 accelerate>=0.33
 numpy>=1.26
 rapidfuzz>=3.9

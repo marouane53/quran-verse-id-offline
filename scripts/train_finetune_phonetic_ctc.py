@@ -11,8 +11,8 @@ Targets:
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -36,6 +36,29 @@ def load_phonetic_map(path: str) -> Dict[Tuple[int, int], str]:
     if len(out) < 6000:
         raise ValueError(f"Phonetic DB seems too small ({len(out)}). Did build_phonetic_db succeed?")
     return out
+
+
+def resolve_device(device_name: str) -> torch.device:
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    if device_name == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("Requested --device cuda but CUDA is not available.")
+        return torch.device("cuda")
+
+    if device_name == "mps":
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is None or not mps_backend.is_available():
+            raise RuntimeError("Requested --device mps but MPS is not available.")
+        return torch.device("mps")
+
+    return torch.device("cpu")
 
 
 class AyahDataset(Dataset):
@@ -132,6 +155,7 @@ def main():
     ap.add_argument("--val-split", default=None, help="Optional split name for validation (else we create a split)")
     ap.add_argument("--val-size", type=float, default=0.01, help="If val-split not provided, fraction for validation")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--device", choices=["auto", "cuda", "mps", "cpu"], default="auto")
 
     ap.add_argument("--max-steps", type=int, default=20000, help="Number of optimizer updates (not microbatches)")
     ap.add_argument("--per-device-batch", type=int, default=8)
@@ -142,6 +166,8 @@ def main():
     ap.add_argument("--eval-steps", type=int, default=1000)
     ap.add_argument("--save-steps", type=int, default=1000)
     ap.add_argument("--num-workers", type=int, default=2)
+    ap.add_argument("--max-train-samples", type=int, default=None, help="Optional cap for train split size")
+    ap.add_argument("--max-val-samples", type=int, default=None, help="Optional cap for validation split size")
     ap.add_argument("--fp16", action="store_true")
     args = ap.parse_args()
 
@@ -151,8 +177,10 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    print(f"Device: {device}")
+    device = resolve_device(args.device)
+    print(f"Device: {device} (requested={args.device})")
+    if args.fp16 and device.type != "cuda":
+        print("Warning: --fp16 is only enabled on CUDA; ignoring on this device.")
 
     phon_map = load_phonetic_map(args.phonetic_db)
 
@@ -174,6 +202,16 @@ def main():
         val_ds = ds.select(range(val_n))
         train_ds = ds.select(range(val_n, len(ds)))
 
+    if args.max_train_samples is not None:
+        train_n = max(1, min(int(args.max_train_samples), len(train_ds)))
+        train_ds = train_ds.select(range(train_n))
+    if args.max_val_samples is not None:
+        val_n = max(1, min(int(args.max_val_samples), len(val_ds)))
+        val_ds = val_ds.select(range(val_n))
+
+    print(f"Train samples: {len(train_ds)}")
+    print(f"Val samples:   {len(val_ds)}")
+
     train = AyahDataset(train_ds, phon_map)
     val = AyahDataset(val_ds, phon_map)
 
@@ -184,7 +222,7 @@ def main():
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=collator,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(device.type == "cuda"),
     )
     val_loader = DataLoader(
         val,
@@ -192,7 +230,7 @@ def main():
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=collator,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(device.type == "cuda"),
     )
 
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -202,7 +240,8 @@ def main():
         num_training_steps=args.max_steps,
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.fp16 and torch.cuda.is_available()))
+    use_cuda_amp = bool(args.fp16 and device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_cuda_amp)
 
     update_step = 0
     micro_step = 0
@@ -224,15 +263,22 @@ def main():
         attention_mask = batch.attention_mask.to(device)
         labels = batch.labels.to(device)
 
-        with torch.cuda.amp.autocast(enabled=(args.fp16 and torch.cuda.is_available())):
+        amp_ctx = torch.cuda.amp.autocast(enabled=use_cuda_amp) if use_cuda_amp else nullcontext()
+        with amp_ctx:
             out = model(input_values=input_values, attention_mask=attention_mask, labels=labels)
             loss = out.loss / float(args.grad_accum)
 
-        scaler.scale(loss).backward()
+        if use_cuda_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         if micro_step % args.grad_accum == 0:
-            scaler.step(optimizer)
-            scaler.update()
+            if use_cuda_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
             update_step += 1

@@ -47,3 +47,6 @@ outputs/
 .DS_Store
 *.swp
 *~
+
+
+/benchmark/test_corpus/

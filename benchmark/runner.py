@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import json
 import time
 from dataclasses import dataclass
@@ -72,6 +73,9 @@ def main():
     ap.add_argument("--experiment", required=True, help="Experiment directory name under ./experiments/")
     ap.add_argument("--corpus", required=True, help="Path to corpus directory (contains manifest.json)")
     ap.add_argument("--phonetic-db", default=None, help="Path to phonetic Quran DB json (required for phonetic experiments)")
+    ap.add_argument("--top-k", type=int, default=None, help="Candidate retrieval top-K (experiment-specific)")
+    ap.add_argument("--max-span-ayahs", type=int, default=None, help="Max ayah span expansion (experiment-specific)")
+    ap.add_argument("--fast", action="store_true", help="Fast preset (top-k=20, max-span-ayahs=2)")
     ap.add_argument("--save", action="store_true", help="Save results JSON to benchmark/results/")
     args = ap.parse_args()
 
@@ -85,6 +89,11 @@ def main():
     samples = manifest.get("samples", [])
 
     exp_mod = importlib.import_module(f"experiments.{args.experiment}.run")
+    predict_sig = inspect.signature(exp_mod.predict)
+    predict_params = set(predict_sig.parameters.keys())
+
+    top_k = args.top_k if args.top_k is not None else (20 if args.fast else 50)
+    max_span_ayahs = args.max_span_ayahs if args.max_span_ayahs is not None else (2 if args.fast else 3)
 
     # model size (best-effort)
     size = None
@@ -99,8 +108,19 @@ def main():
     total_seqacc = 0.0
     latencies: List[float] = []
     per_sample: List[Dict] = []
+    n = len(samples)
 
-    for s in samples:
+    if n == 0:
+        print(f"No samples found in manifest: {manifest_path}")
+        return 1
+    print(
+        f"Runtime config: fast={args.fast} | top_k={top_k} | max_span_ayahs={max_span_ayahs}",
+        flush=True,
+    )
+
+    for idx, s in enumerate(samples, start=1):
+        sample_label = s.get("id") or s.get("file") or f"sample_{idx}"
+        print(f"[{idx}/{n}] Running: {sample_label}", flush=True)
         audio_path = str(corpus_dir / s["file"])
 
         if "expected_verses" in s:
@@ -111,12 +131,16 @@ def main():
         else:
             expected_seq = _expand_span(s.get("surah"), s.get("ayah"), s.get("ayah_end"))
 
+        predict_kwargs: Dict = {}
+        if args.phonetic_db is not None and "phonetic_db_path" in predict_params:
+            predict_kwargs["phonetic_db_path"] = args.phonetic_db
+        if "top_k" in predict_params:
+            predict_kwargs["top_k"] = top_k
+        if "max_span_ayahs" in predict_params:
+            predict_kwargs["max_span_ayahs"] = max_span_ayahs
+
         start = time.perf_counter()
-        try:
-            pred = exp_mod.predict(audio_path, phonetic_db_path=args.phonetic_db)
-        except TypeError:
-            # experiment signature doesn't accept phonetic_db_path
-            pred = exp_mod.predict(audio_path)
+        pred = exp_mod.predict(audio_path, **predict_kwargs)
         elapsed = time.perf_counter() - start
 
         predicted_seq = _expand_span(pred.get("surah"), pred.get("ayah"), pred.get("ayah_end"))
@@ -126,6 +150,12 @@ def main():
         total_precision += scores["precision"]
         total_seqacc += scores["sequence_accuracy"]
         latencies.append(elapsed)
+        print(
+            f"[{idx}/{n}] Done: {sample_label} | latency={elapsed:.3f}s | "
+            f"recall={scores['recall']*100:.1f}% | precision={scores['precision']*100:.1f}% | "
+            f"seqacc={scores['sequence_accuracy']*100:.1f}%",
+            flush=True,
+        )
 
         per_sample.append(
             {
@@ -141,7 +171,6 @@ def main():
             }
         )
 
-    n = len(samples)
     avg_latency = sum(latencies) / n if n else 0.0
     results = {
         "experiment": args.experiment,
@@ -151,6 +180,11 @@ def main():
         "total": n,
         "avg_latency_s": avg_latency,
         "model_size_bytes": size,
+        "runner_config": {
+            "fast": bool(args.fast),
+            "top_k": int(top_k),
+            "max_span_ayahs": int(max_span_ayahs),
+        },
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "per_sample": per_sample,
     }
