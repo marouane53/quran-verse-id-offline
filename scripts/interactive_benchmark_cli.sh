@@ -225,7 +225,7 @@ choose_experiment() {
 }
 
 run_benchmark() {
-  local exp corpus db ckpt fast use_fast top_k max_span fast_flag
+  local exp corpus db ckpt fast use_fast top_k max_span fast_flag resume_idx resume_id resume_args
   exp="$(choose_experiment)" || return 1
   read -r -p "Corpus dir [$DEFAULT_CORPUS_DIR]: " corpus
   corpus="${corpus:-$DEFAULT_CORPUS_DIR}"
@@ -252,6 +252,18 @@ run_benchmark() {
     max_span="${max_span:-3}"
     fast_flag=""
   fi
+  read -r -p "Resume from manifest index (empty = none): " resume_idx
+  resume_idx="${resume_idx:-}"
+  resume_args=""
+  if [[ -n "$resume_idx" ]]; then
+    resume_args="--resume-from-index $resume_idx"
+  else
+    read -r -p "Resume from sample id/file (empty = none): " resume_id
+    resume_id="${resume_id:-}"
+    if [[ -n "$resume_id" ]]; then
+      resume_args="--resume-from-id $resume_id"
+    fi
+  fi
 
   activate_venv
   cd "$ROOT_DIR"
@@ -263,6 +275,7 @@ run_benchmark() {
       $fast_flag \
       --top-k "$top_k" \
       --max-span-ayahs "$max_span" \
+      $resume_args \
       --save
   else
     python -m benchmark.runner \
@@ -272,6 +285,7 @@ run_benchmark() {
       $fast_flag \
       --top-k "$top_k" \
       --max-span-ayahs "$max_span" \
+      $resume_args \
       --save
   fi
 }
@@ -329,7 +343,7 @@ run_full_finetune_20k() {
 }
 
 benchmark_with_latest_checkpoint() {
-  local exp corpus db latest_file ckpt_dir fast use_fast top_k max_span fast_flag
+  local exp corpus db latest_file ckpt_dir fast use_fast top_k max_span fast_flag resume_idx resume_id resume_args
   exp="$(choose_experiment)" || return 1
   read -r -p "Corpus dir [$DEFAULT_CORPUS_DIR]: " corpus
   corpus="${corpus:-$DEFAULT_CORPUS_DIR}"
@@ -366,6 +380,18 @@ benchmark_with_latest_checkpoint() {
     max_span="${max_span:-3}"
     fast_flag=""
   fi
+  read -r -p "Resume from manifest index (empty = none): " resume_idx
+  resume_idx="${resume_idx:-}"
+  resume_args=""
+  if [[ -n "$resume_idx" ]]; then
+    resume_args="--resume-from-index $resume_idx"
+  else
+    read -r -p "Resume from sample id/file (empty = none): " resume_id
+    resume_id="${resume_id:-}"
+    if [[ -n "$resume_id" ]]; then
+      resume_args="--resume-from-id $resume_id"
+    fi
+  fi
 
   activate_venv
   cd "$ROOT_DIR"
@@ -376,6 +402,7 @@ benchmark_with_latest_checkpoint() {
     $fast_flag \
     --top-k "$top_k" \
     --max-span-ayahs "$max_span" \
+    $resume_args \
     --save
 }
 

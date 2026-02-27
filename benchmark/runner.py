@@ -76,8 +76,13 @@ def main():
     ap.add_argument("--top-k", type=int, default=None, help="Candidate retrieval top-K (experiment-specific)")
     ap.add_argument("--max-span-ayahs", type=int, default=None, help="Max ayah span expansion (experiment-specific)")
     ap.add_argument("--fast", action="store_true", help="Fast preset (top-k=20, max-span-ayahs=2)")
+    ap.add_argument("--resume-from-index", type=int, default=None, help="1-based manifest index to start from")
+    ap.add_argument("--resume-from-id", default=None, help="Sample id (or file name) to start from")
     ap.add_argument("--save", action="store_true", help="Save results JSON to benchmark/results/")
     args = ap.parse_args()
+
+    if args.resume_from_index is not None and args.resume_from_id is not None:
+        raise ValueError("Use only one of --resume-from-index or --resume-from-id.")
 
     root = Path(__file__).resolve().parent.parent
     corpus_dir = Path(args.corpus)
@@ -108,20 +113,62 @@ def main():
     total_seqacc = 0.0
     latencies: List[float] = []
     per_sample: List[Dict] = []
-    n = len(samples)
+    n_manifest = len(samples)
+    skipped_missing: List[str] = []
 
-    if n == 0:
+    if n_manifest == 0:
         print(f"No samples found in manifest: {manifest_path}")
         return 1
+
+    start_index = 1
+    if args.resume_from_index is not None:
+        if args.resume_from_index < 1 or args.resume_from_index > n_manifest:
+            raise ValueError(f"--resume-from-index must be in [1, {n_manifest}]")
+        start_index = int(args.resume_from_index)
+    elif args.resume_from_id:
+        needle = str(args.resume_from_id)
+        found = None
+        for i, s in enumerate(samples, start=1):
+            sid = str(s.get("id", ""))
+            sfile = str(s.get("file", ""))
+            if needle == sid or needle == sfile:
+                found = i
+                break
+        if found is None:
+            raise ValueError(f"--resume-from-id not found in manifest: {needle}")
+        start_index = int(found)
+
+    samples = samples[start_index - 1 :]
+    n_run = len(samples)
+    if n_run == 0:
+        print(f"No samples to evaluate from start index {start_index}.")
+        return 1
+
+    if start_index > 1:
+        print(f"Resume mode: starting from manifest index {start_index} of {n_manifest}", flush=True)
+
     print(
         f"Runtime config: fast={args.fast} | top_k={top_k} | max_span_ayahs={max_span_ayahs}",
         flush=True,
     )
 
-    for idx, s in enumerate(samples, start=1):
+    for idx, s in enumerate(samples, start=start_index):
         sample_label = s.get("id") or s.get("file") or f"sample_{idx}"
-        print(f"[{idx}/{n}] Running: {sample_label}", flush=True)
+        print(f"[{idx}/{n_manifest}] Running: {sample_label}", flush=True)
         audio_path = str(corpus_dir / s["file"])
+        if not Path(audio_path).exists():
+            print(f"[{idx}/{n_manifest}] Skipped (missing file): {audio_path}", flush=True)
+            skipped_missing.append(s.get("file", sample_label))
+            per_sample.append(
+                {
+                    "id": s.get("id"),
+                    "file": s.get("file"),
+                    "manifest_index": idx,
+                    "error": "missing_audio_file",
+                    "audio_path": audio_path,
+                }
+            )
+            continue
 
         if "expected_verses" in s:
             expected_seq = s["expected_verses"]
@@ -151,7 +198,7 @@ def main():
         total_seqacc += scores["sequence_accuracy"]
         latencies.append(elapsed)
         print(
-            f"[{idx}/{n}] Done: {sample_label} | latency={elapsed:.3f}s | "
+            f"[{idx}/{n_manifest}] Done: {sample_label} | latency={elapsed:.3f}s | "
             f"recall={scores['recall']*100:.1f}% | precision={scores['precision']*100:.1f}% | "
             f"seqacc={scores['sequence_accuracy']*100:.1f}%",
             flush=True,
@@ -161,6 +208,7 @@ def main():
             {
                 "id": s.get("id"),
                 "file": s.get("file"),
+                "manifest_index": idx,
                 "expected": expected_seq,
                 "predicted": predicted_seq,
                 "raw_pred": pred,
@@ -171,13 +219,22 @@ def main():
             }
         )
 
-    avg_latency = sum(latencies) / n if n else 0.0
+    evaluated_n = len(latencies)
+    if evaluated_n == 0:
+        print("No evaluable samples (all missing).")
+        return 1
+
+    avg_latency = sum(latencies) / evaluated_n
     results = {
         "experiment": args.experiment,
-        "recall": total_recall / n if n else 0.0,
-        "precision": total_precision / n if n else 0.0,
-        "sequence_accuracy": total_seqacc / n if n else 0.0,
-        "total": n,
+        "recall": total_recall / evaluated_n,
+        "precision": total_precision / evaluated_n,
+        "sequence_accuracy": total_seqacc / evaluated_n,
+        "total": evaluated_n,
+        "total_manifest_samples": n_manifest,
+        "resume_from_index": start_index,
+        "resume_from_id": args.resume_from_id,
+        "skipped_missing_files": skipped_missing,
         "avg_latency_s": avg_latency,
         "model_size_bytes": size,
         "runner_config": {
@@ -202,6 +259,10 @@ def main():
     print(f"{'SeqAcc':<18} {results['sequence_accuracy']*100:>11.1f}%")
     print(f"{'Avg latency':<18} {results['avg_latency_s']:>11.3f}s")
     print(f"{'Samples':<18} {results['total']:>12d}")
+    if start_index > 1:
+        print(f"{'Resume start':<18} {start_index:>12d}")
+    if skipped_missing:
+        print(f"{'Skipped missing':<18} {len(skipped_missing):>12d}")
     print()
 
     if args.save:
