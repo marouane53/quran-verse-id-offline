@@ -1,0 +1,11 @@
+torch>=2.2
+torchaudio>=2.2
+transformers>=4.43
+datasets>=2.20
+accelerate>=0.33
+numpy>=1.26
+rapidfuzz>=3.9
+tqdm>=4.66
+onnx>=1.16
+onnxruntime>=1.18
+pytest>=8.0

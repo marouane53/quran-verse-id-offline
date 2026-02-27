@@ -1,0 +1,48 @@
+{
+  "samples": [
+    {
+      "id": "everyayah_001001",
+      "file": "everyayah_001001.mp3",
+      "expected": {
+        "surah": 1,
+        "ayah": 1,
+        "ayah_end": null
+      },
+      "source": "everyayah",
+      "category": "short"
+    },
+    {
+      "id": "everyayah_112001",
+      "file": "everyayah_112001.mp3",
+      "expected": {
+        "surah": 112,
+        "ayah": 1,
+        "ayah_end": null
+      },
+      "source": "everyayah",
+      "category": "short"
+    },
+    {
+      "id": "everyayah_112002",
+      "file": "everyayah_112002.mp3",
+      "expected": {
+        "surah": 112,
+        "ayah": 2,
+        "ayah_end": null
+      },
+      "source": "everyayah",
+      "category": "short"
+    },
+    {
+      "id": "everyayah_112003",
+      "file": "everyayah_112003.mp3",
+      "expected": {
+        "surah": 112,
+        "ayah": 3,
+        "ayah_end": null
+      },
+      "source": "everyayah",
+      "category": "short"
+    }
+  ]
+}
